@@ -1,10 +1,12 @@
 """AI Math Assistant: a LangChain agent with add, subtract, multiply and divide tools.
 
 Run from the project folder:
-    uv run python math_assistant.py
+    uv run python math_assistant.py            # normal
+    uv run python math_assistant.py --trace    # also print each tool call and result
 """
 
 import os
+import sys
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -67,18 +69,38 @@ def build_agent():
     return create_agent(model=llm, tools=TOOLS, system_prompt=SYSTEM_PROMPT)
 
 
-def ask(agent, question: str) -> str:
+def ask(agent, question: str, trace: bool = False) -> str:
     # recursion_limit stops the agent if it ever gets stuck in a loop of tool calls
-    result = agent.invoke(
+    answer = ""
+    for update in agent.stream(
         {"messages": [{"role": "user", "content": question}]},
         config={"recursion_limit": 20},
-    )
-    return result["messages"][-1].content
+        stream_mode="updates",
+    ):
+        for step in update.values():
+            for msg in (step or {}).get("messages", []):
+                if msg.type == "ai":
+                    for call in msg.tool_calls:
+                        if trace:
+                            print(f"  [trace] call   {call['name']}({call['args']})")
+                    if not msg.tool_calls:
+                        answer = msg.content
+                elif msg.type == "tool" and trace:
+                    print(f"  [trace] result {msg.name} -> {msg.content}")
+    return answer
+
+
+def langsmith_enabled() -> bool:
+    return os.getenv("LANGSMITH_TRACING", "").lower() == "true" and bool(os.getenv("LANGSMITH_API_KEY"))
 
 
 def main():
+    trace = "--trace" in sys.argv
     agent = build_agent()
     print("AI Math Assistant (type 'quit' to exit)")
+    print("Local trace:", "on" if trace else "off (run with --trace to see tool calls)")
+    if langsmith_enabled():
+        print("LangSmith trace: on, project:", os.getenv("LANGSMITH_PROJECT", "default"))
     print("Example: add 25 and 15, then multiply by 2\n")
 
     while True:
@@ -91,7 +113,7 @@ def main():
         if not question:
             continue
         try:
-            print("Assistant:", ask(agent, question), "\n")
+            print("Assistant:", ask(agent, question, trace), "\n")
         except Exception as e:
             print("Error:", e, "\n")
 
